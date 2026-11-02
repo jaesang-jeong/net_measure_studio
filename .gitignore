@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Compiled binaries
+bin/*.exe
+
+# IDE & OS
+.idea/
+.vscode/
+Thumbs.db
+[Dd]esktop.ini
