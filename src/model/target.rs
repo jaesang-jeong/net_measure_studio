@@ -21,6 +21,26 @@ pub enum ConnectionStatus {
     Offline,  // 단절 (> 1000ms)
 }
 
+fn default_channel_count() -> usize {
+    50
+}
+
+fn default_sftp_user() -> String {
+    "admin".to_string()
+}
+
+fn default_remote_dir() -> String {
+    "/home/admin/data".to_string()
+}
+
+fn default_local_dir() -> String {
+    "downloads".to_string()
+}
+
+fn default_interval_ms() -> u32 {
+    100
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetDeviceConfig {
     pub device_id: u16,
@@ -30,11 +50,63 @@ pub struct TargetDeviceConfig {
     pub control_port: u16,    // TCP control command port
     pub sftp_port: u16,       // SFTP file transfer port
     pub transport: DataTransportProtocol,
+    #[serde(default)]
+    pub channel_offset: usize, // 시작 채널 인덱스 (0 = CH001부터, 50 = CH051부터)
+    #[serde(default = "default_channel_count")]
+    pub channel_count: usize,  // 이 장치의 채널 수 (기본: 50)
     pub enabled: bool,
+    #[serde(default)]
+    pub sftp_ip: Option<IpAddr>, // SFTP 접속 전용 IP (None일 경우 계측 데이터 IP 사용)
+    #[serde(default = "default_sftp_user")]
+    pub sftp_user: String,
+    #[serde(default)]
+    pub sftp_password: String,
+    #[serde(default = "default_remote_dir")]
+    pub remote_dir: String,
+    #[serde(default = "default_local_dir")]
+    pub local_dir: String,
+    #[serde(default = "default_interval_ms")]
+    pub packet_interval_ms: u32,
+}
+
+pub const TARGETS_CONFIG_FILE: &str = "targets_config.json";
+
+/// 설정 파일(targets_config.json) 경로 해석
+pub fn resolve_target_config_path() -> std::path::PathBuf {
+    let filename = TARGETS_CONFIG_FILE;
+    let p = std::path::Path::new(filename);
+    if p.exists() {
+        return p.to_path_buf();
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let exe_adj = parent.join(filename);
+            if exe_adj.exists() {
+                return exe_adj;
+            }
+            if parent.file_name().map(|n| n == "bin").unwrap_or(false) {
+                if let Some(root) = parent.parent() {
+                    let root_adj = root.join(filename);
+                    if root_adj.exists() {
+                        return root_adj;
+                    }
+                }
+            }
+            return exe_adj;
+        }
+    }
+    std::path::PathBuf::from(filename)
 }
 
 impl TargetDeviceConfig {
+    /// SFTP 접속 전용 IP를 반환하며, 설정되지 않았을 경우 데이터 통신 IP를 반환합니다.
+    pub fn get_sftp_ip(&self) -> IpAddr {
+        self.sftp_ip.unwrap_or(self.ip)
+    }
+
     pub fn new_default(device_id: u16, name: &str, ip: IpAddr) -> Self {
+        let channel_count = 50;
+        let channel_offset = (device_id.saturating_sub(1) as usize) * channel_count;
         Self {
             device_id,
             name: name.to_string(),
@@ -43,8 +115,48 @@ impl TargetDeviceConfig {
             control_port: 9000,
             sftp_port: 22,
             transport: DataTransportProtocol::Udp,
+            channel_offset,
+            channel_count,
             enabled: true,
+            sftp_ip: Some(ip),
+            sftp_user: "admin".to_string(),
+            sftp_password: "".to_string(),
+            remote_dir: "/home/admin/data".to_string(),
+            local_dir: format!("downloads/{}", name.to_lowercase().replace(' ', "_")),
+            packet_interval_ms: 100,
         }
+    }
+
+    /// 파일에서 타겟 장치 목록 불러오기 (없으면 기본 타겟 1개 생성)
+    pub fn load_or_default(path: &std::path::Path) -> Vec<Self> {
+        if path.exists() {
+            if let Ok(file) = std::fs::File::open(path) {
+                let reader = std::io::BufReader::new(file);
+                if let Ok(targets) = serde_json::from_reader::<_, Vec<Self>>(reader) {
+                    if !targets.is_empty() {
+                        return targets;
+                    }
+                }
+            }
+        }
+        vec![Self::new_default(
+            1,
+            "Target-Station-01",
+            "127.0.0.1".parse().unwrap(),
+        )]
+    }
+
+    /// 타겟 장치 목록을 파일에 영구 저장
+    pub fn save_to_file(path: &std::path::Path, targets: &[Self]) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        let file = std::fs::File::create(path)?;
+        let writer = std::io::BufWriter::new(file);
+        serde_json::to_writer_pretty(writer, targets)?;
+        Ok(())
     }
 }
 

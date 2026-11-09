@@ -66,6 +66,16 @@ impl TargetSimulator {
         }
     }
 
+    pub fn set_interval_ms(&self, interval_ms: u64) {
+        if let Ok(mut cfg) = self.config.lock() {
+            cfg.interval_ms = interval_ms.max(1);
+        }
+    }
+
+    pub fn get_interval_ms(&self) -> u64 {
+        self.config.lock().map(|cfg| cfg.interval_ms).unwrap_or(100)
+    }
+
     pub fn is_running(&self) -> bool {
         self.is_running.load(Ordering::Relaxed)
     }
@@ -208,8 +218,13 @@ impl TargetSimulator {
                         if let Ok(_) = reader.read_line(&mut line) {
                             if let Ok(cmd) = ControlCommand::from_json_str(&line) {
                                 let response = match cmd {
-                                    ControlCommand::RecStart { session_id, .. } => {
+                                    ControlCommand::RecStart { session_id, interval_ms, .. } => {
                                         is_recording_ctrl.store(true, Ordering::SeqCst);
+                                        if interval_ms > 0 {
+                                            if let Ok(mut cfg) = config_ctrl.lock() {
+                                                cfg.interval_ms = interval_ms as u64;
+                                            }
+                                        }
                                         *active_session_ctrl.lock().unwrap() = Some(session_id.clone());
                                         ControlResponse::Ack {
                                             cmd: "CMD_REC_START".to_string(),

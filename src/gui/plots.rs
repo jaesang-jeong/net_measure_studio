@@ -22,6 +22,7 @@ const COLOR_PALETTE: [Color32; 10] = [
 pub fn render_dual_or_single_plots(
     ui: &mut Ui,
     is_dual: bool,
+    page_title: &mut String,
     top_channels: &[usize],
     bottom_channels: &[usize],
     top_config: &mut GraphDisplayConfig,
@@ -95,15 +96,26 @@ pub fn render_dual_or_single_plots(
         // [Page 2~10: 1 그래프 구성 (단일 대형 고해상도 그래프)]
         ui.group(|ui| {
             ui.set_height(available_height - 8.0);
+            let default_title = if !page_title.trim().is_empty() {
+                page_title.as_str()
+            } else {
+                "📊 [단일 대형 그래프]"
+            };
             render_graph_control_bar(
                 ui,
-                "📊 [단일 대형 그래프]",
+                default_title,
                 top_config,
                 top_channels,
                 &channels,
                 y_scale_modal,
                 layout_changed,
             );
+
+            // 단일 그래프 타이틀이 변경된 경우 페이지 전체 title과 동기화
+            if !top_config.title.trim().is_empty() && top_config.title != *page_title {
+                *page_title = top_config.title.clone();
+                *layout_changed = true;
+            }
 
             render_single_plot_canvas(
                 ui,
@@ -122,7 +134,7 @@ pub fn render_dual_or_single_plots(
 /// 그래프 상단 컨트롤 툴바: X축 길이, Y스케일(Auto/수동), Multi-Y 오버레이 토글, Y설정 모달 버튼
 fn render_graph_control_bar(
     ui: &mut Ui,
-    title: &str,
+    default_title: &str,
     config: &mut GraphDisplayConfig,
     active_channels: &[usize],
     channels: &[ChannelState],
@@ -130,7 +142,66 @@ fn render_graph_control_bar(
     layout_changed: &mut bool,
 ) {
     ui.horizontal(|ui| {
-        ui.strong(title);
+        // 그래프 타이틀: 평상시 레이블 표시, 더블클릭 시 인라인 텍스트필드로 전환하여 수정
+        if config.is_editing_title {
+            let edit_resp = ui.add(
+                egui::TextEdit::singleline(&mut config.title)
+                    .desired_width(220.0)
+                    .hint_text(default_title),
+            );
+
+            if !edit_resp.has_focus() {
+                edit_resp.request_focus();
+            }
+
+            if edit_resp.changed() {
+                *layout_changed = true;
+            }
+
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let btn_confirm = ui
+                .button(egui::RichText::new("✔").color(Color32::from_rgb(100, 240, 100)))
+                .on_hover_text("타이틀 수정 완료 (Enter)")
+                .clicked();
+
+            if enter_pressed || btn_confirm || (edit_resp.lost_focus() && !edit_resp.has_focus()) {
+                config.title = config.title.trim().to_string();
+                if config.title.is_empty() {
+                    config.title = default_title.to_string();
+                }
+                config.is_editing_title = false;
+                *layout_changed = true;
+            } else if esc_pressed {
+                config.is_editing_title = false;
+            }
+        } else {
+            let display_title = if !config.title.trim().is_empty() {
+                &config.title
+            } else {
+                default_title
+            };
+
+            let title_label = egui::Label::new(
+                egui::RichText::new(display_title)
+                    .strong()
+                    .color(Color32::from_rgb(220, 235, 255)),
+            )
+            .sense(egui::Sense::click());
+
+            let label_resp = ui
+                .add(title_label)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("💡 더블클릭하여 그래프 타이틀을 변경할 수 있습니다.");
+
+            if label_resp.double_clicked() {
+                if config.title.trim().is_empty() {
+                    config.title = default_title.to_string();
+                }
+                config.is_editing_title = true;
+            }
+        }
+
         ui.separator();
 
         // 1. X축 시간 길이 지정 (X-Axis Span)
@@ -188,18 +259,65 @@ fn render_graph_control_bar(
             }
         }
 
-        // 4. 채널별 Y스케일 사용자 지정 팝업 버튼
-        if config.multi_y_overlay {
-            if ui.button("⚙ 채널별 Y스케일 설정").clicked() {
-                y_scale_modal.open_for(
-                    &format!("{} 채널별 Y스케일 설정", title),
-                    active_channels,
-                    config,
-                    channels,
-                );
+        // 4. 채널별 Y스케일 사용자 지정 팝업 버튼 (상시 노출하여 첫번째 탭 상단/하단 및 모든 페이지에서 즉시 설정 가능)
+        let current_title = if !config.title.trim().is_empty() {
+            &config.title
+        } else {
+            default_title
+        };
+        if ui
+            .button("⚙ 채널별 Y스케일 설정")
+            .on_hover_text("채널별 Y축 상한/하한값 커스텀 수동 입력 및 스케일 조정 (클릭 시 다중 Y축 오버레이 모드 활성화)")
+            .clicked()
+        {
+            if !config.multi_y_overlay {
+                config.multi_y_overlay = true;
+                *layout_changed = true;
             }
+            y_scale_modal.open_for(
+                &format!("{} 채널별 Y스케일 설정", current_title),
+                active_channels,
+                config,
+                channels,
+            );
         }
     });
+}
+
+/// "Nice numbers" 알고리즘: Y축 눈금과 경계가 프레임마다 소수점으로 떨리지 않도록
+/// 1, 2, 5 * 10^k 단위의 안정적인 정수/소수 단위로 라운딩하여 상하단 범위를 스냅
+fn compute_nice_bounds(raw_min: f64, raw_max: f64) -> (f64, f64) {
+    if !raw_min.is_finite() || !raw_max.is_finite() || raw_min >= raw_max {
+        return (-10.0, 10.0);
+    }
+    let span = raw_max - raw_min;
+    if span <= 1e-6 {
+        return (raw_min - 1.0, raw_max + 1.0);
+    }
+
+    // 5~8개 정도의 깔끔한 눈금 간격 생성
+    let rough_step = span / 6.0;
+    let exponent = 10.0_f64.powf(rough_step.log10().floor());
+    let fraction = rough_step / exponent;
+    let nice_fraction = if fraction < 1.5 {
+        1.0
+    } else if fraction < 3.0 {
+        2.0
+    } else if fraction < 7.0 {
+        5.0
+    } else {
+        10.0
+    };
+    let step = nice_fraction * exponent;
+
+    let nice_min = (raw_min / step).floor() * step;
+    let nice_max = (raw_max / step).ceil() * step;
+
+    if nice_max <= nice_min {
+        (nice_min - step, nice_max + step)
+    } else {
+        (nice_min, nice_max)
+    }
 }
 
 /// 실제 플롯 캔버스 렌더링 + [플롯 범례: 채널이름 [단위] ● 우측 정렬 오버레이]
@@ -228,43 +346,210 @@ fn render_single_plot_canvas(
         }
     }
 
-    // 2. Y축 Bounds 계산
+    let window_start = latest_time - window_secs;
+
+    // 2. [다중 Y축 모드]: 가시 채널들을 '단위(Unit)'별로 그룹화하여 단위별 스케일(Min/Max) 산출
+    struct UnitScaleGroup {
+        unit: String,
+        color: Color32,
+        channels: Vec<usize>,
+        min_val: f64,
+        max_val: f64,
+    }
+
+    let mut unit_groups: Vec<UnitScaleGroup> = Vec::new();
+    if config.multi_y_overlay {
+        for &ch_idx in channels_to_plot {
+            if config.is_channel_hidden(ch_idx) || ch_idx >= channels.len() {
+                continue;
+            }
+            let ch = &channels[ch_idx];
+            let unit_str = ch.config.unit.trim().to_string();
+            let color = COLOR_PALETTE[channels_to_plot.iter().position(|&x| x == ch_idx).unwrap_or(0) % COLOR_PALETTE.len()];
+
+            if let Some(group) = unit_groups.iter_mut().find(|g| g.unit == unit_str) {
+                group.channels.push(ch_idx);
+            } else {
+                unit_groups.push(UnitScaleGroup {
+                    unit: unit_str,
+                    color,
+                    channels: vec![ch_idx],
+                    min_val: f64::MAX,
+                    max_val: f64::MIN,
+                });
+            }
+        }
+
+        // 단위별 Min / Max 계산 (상하 과다 마진 없이 데이터 전 구간 꽉 채움)
+        for group in &mut unit_groups {
+            let mut g_min = f64::MAX;
+            let mut g_max = f64::MIN;
+            let mut has_pts = false;
+
+            if config.auto_scale_y {
+                for &ch_idx in &group.channels {
+                    if ch_idx < ring_buffers.len() {
+                        let pts = ring_buffers[ch_idx].get_points();
+                        for pt in &pts {
+                            if pt[0] >= window_start - 0.1 && pt[0] <= latest_time + 0.1 {
+                                let v = pt[1];
+                                if v.is_finite() {
+                                    if v < g_min { g_min = v; }
+                                    if v > g_max { g_max = v; }
+                                    has_pts = true;
+                                }
+                            }
+                        }
+                        if !has_pts {
+                            if let Some(last) = pts.last() {
+                                let v = last[1];
+                                if v.is_finite() {
+                                    if v < g_min { g_min = v; }
+                                    if v > g_max { g_max = v; }
+                                    has_pts = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 수동 지정 모드: channel_y_limits 참조
+                for &ch_idx in &group.channels {
+                    if let Some(&(cmin, cmax)) = config.channel_y_limits.get(&ch_idx) {
+                        if cmin < g_min { g_min = cmin; }
+                        if cmax > g_max { g_max = cmax; }
+                        has_pts = true;
+                    }
+                }
+            }
+
+            // 데이터가 없거나 유효하지 않은 경우 알람 임계값 참조
+            if !has_pts || g_min >= g_max {
+                for &ch_idx in &group.channels {
+                    if ch_idx < channels.len() {
+                        let low = channels[ch_idx].config.alarm_low as f64;
+                        let high = channels[ch_idx].config.alarm_high as f64;
+                        if low < g_min { g_min = low; }
+                        if high > g_max { g_max = high; }
+                    }
+                }
+            }
+
+            if g_min >= g_max || !g_min.is_finite() || !g_max.is_finite() {
+                g_min = -10.0;
+                g_max = 10.0;
+            } else if (g_max - g_min).abs() < 1e-4 {
+                let center = g_min;
+                let half = if center.abs() > 1e-3 { (center.abs() * 0.05).max(0.5) } else { 0.5 };
+                g_min = center - half;
+                g_max = center + half;
+            }
+
+            group.min_val = g_min;
+            group.max_val = g_max;
+        }
+    }
+
+    // 3. Y축 Bounds 계산
     let (plot_y_min, plot_y_max) = if config.multi_y_overlay {
-        // 다중 Y축 모드일 때는 모든 채널이 0.0 ~ 100.0%로 정규화되어 오버레이됨
-        (-5.0, 105.0)
+        // 다중 Y축 모드: 상하 마진(기존 -5~105)을 완전히 제거하고 0.0 ~ 100.0%로 전 구간 꽉 채움!
+        (0.0, 100.0)
     } else if config.auto_scale_y {
-        // Auto-Scale 모드
+        // [단일 Y축 Auto-Scale]: 가시 윈도우 스캔 후 상하 불필요한 과다 마진 제거
         let mut min_val = f64::MAX;
         let mut max_val = f64::MIN;
+        let mut has_points = false;
+
         for &ch_idx in channels_to_plot {
             if config.is_channel_hidden(ch_idx) || ch_idx >= ring_buffers.len() {
                 continue;
             }
             let pts = ring_buffers[ch_idx].get_points();
-            for pt in pts {
-                let v = pt[1];
-                if v < min_val { min_val = v; }
-                if v > max_val { max_val = v; }
+            for pt in &pts {
+                if pt[0] >= window_start - 0.1 && pt[0] <= latest_time + 0.1 {
+                    let v = pt[1];
+                    if v.is_finite() {
+                        if v < min_val { min_val = v; }
+                        if v > max_val { max_val = v; }
+                        has_points = true;
+                    }
+                }
+            }
+            if !has_points {
+                if let Some(last) = pts.last() {
+                    let v = last[1];
+                    if v.is_finite() {
+                        if v < min_val { min_val = v; }
+                        if v > max_val { max_val = v; }
+                        has_points = true;
+                    }
+                }
             }
         }
-        if min_val >= max_val {
+
+        if !has_points || min_val == f64::MAX || max_val == f64::MIN {
             (-10.0, 10.0)
+        } else if (max_val - min_val).abs() < 1e-4 {
+            let center = min_val;
+            let half = if center.abs() > 1e-3 {
+                (center.abs() * 0.05).max(0.5)
+            } else {
+                0.5
+            };
+            compute_nice_bounds(center - half, center + half)
         } else {
-            let margin = ((max_val - min_val) * 0.1).max(0.5);
-            (min_val - margin, max_val + margin)
+            // 상하 과다 마진 제거: 바로 눈금 스냅
+            compute_nice_bounds(min_val, max_val)
         }
     } else {
         // 사용자 직접 지정 단일 Y스케일
         (config.custom_y_min, config.custom_y_max)
     };
 
-    let plot = Plot::new(plot_id)
-        .height(height)
-        .coordinates_formatter(Corner::LeftBottom, CoordinatesFormatter::default())
-        .show_axes([true, true])
-        .show_grid([true, true]);
+    // Auto-Y가 켜져 있을 때 현재 계산된 bounds를 custom_y_min/max에 동기화
+    if config.auto_scale_y && !config.multi_y_overlay {
+        config.custom_y_min = plot_y_min;
+        config.custom_y_max = plot_y_max;
+    }
 
-    let plot_resp = plot.show(ui, |plot_ui| {
+    // 다중 Y축 오버레이 모드에서는 0~100 일괄 축을 숨기고 단위별 전용 Y축 스케일을 직접 렌더링
+    let show_default_y_axis = !config.multi_y_overlay || unit_groups.is_empty();
+
+    let num_units = if config.multi_y_overlay { unit_groups.len() } else { 0 };
+    let col_width = 48.0_f32;
+    let col_gap = 3.0_f32;
+    let total_axis_width = if num_units > 0 {
+        (num_units as f32) * (col_width + col_gap) + 2.0
+    } else {
+        0.0
+    };
+
+    let mut newly_hovered: Option<usize> = None;
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        // 1. [좌측 전용 Y축 영역 할당]: 그래프 캔버스 바깥 좌측에 배치하여 파형과 툴바를 절대 침범하지 않음
+        let axis_rect = if total_axis_width > 0.0 {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(total_axis_width, height),
+                egui::Sense::hover(),
+            );
+            Some(rect)
+        } else {
+            None
+        };
+
+        // 2. [우측 플롯 캔버스]: Y축 스케일 영역 다음 위치에서 남은 가용 폭 100%를 채움
+        let plot_width = (ui.available_width() - 2.0).max(100.0);
+        let plot = Plot::new(plot_id)
+            .height(height)
+            .width(plot_width)
+            .coordinates_formatter(Corner::RightBottom, CoordinatesFormatter::default())
+            .show_axes([true, show_default_y_axis])
+            .show_grid([true, true]);
+
+        let plot_resp = plot.show(ui, |plot_ui| {
         // [플롯 영역 좌우로 100% 꽉 채우기]: 최신 시각 기준 [-window_secs, 0.0] 범위로 플롯 경계 고정!
         let bounds = PlotBounds::from_min_max([-window_secs, plot_y_min], [0.0, plot_y_max]);
         plot_ui.set_plot_bounds(bounds);
@@ -285,11 +570,23 @@ fn render_single_plot_canvas(
                 let ch_info = &channels[ch_idx];
                 let pts = ring_buffers[ch_idx].get_points();
 
-                let (ch_ymin, ch_ymax) = config.get_channel_y_limit(
-                    ch_idx,
-                    ch_info.config.alarm_low as f64,
-                    ch_info.config.alarm_high as f64,
-                );
+                // 다중 Y축 모드일 때는 채널의 단위 그룹의 (min, max)를 기준으로 0~100% 정규화
+                let (ch_ymin, ch_ymax) = if config.multi_y_overlay {
+                    let ch_unit = ch_info.config.unit.trim();
+                    if let Some(grp) = unit_groups.iter().find(|g| g.unit == ch_unit) {
+                        (grp.min_val, grp.max_val)
+                    } else {
+                        (ch_info.config.alarm_low as f64, ch_info.config.alarm_high as f64)
+                    }
+                } else if let Some(&(min, max)) = config.channel_y_limits.get(&ch_idx) {
+                    (min, max)
+                } else {
+                    config.get_channel_y_limit(
+                        ch_idx,
+                        ch_info.config.alarm_low as f64,
+                        ch_info.config.alarm_high as f64,
+                    )
+                };
 
                 // 최신 시간 기준 상대 시간 [-window_secs ~ 0.0]으로 변환하여 좌우 빈틈없이 100% 꽉 채움!
                 let mut mapped_points: Vec<[f64; 2]> = Vec::with_capacity(pts.len() + 2);
@@ -368,12 +665,104 @@ fn render_single_plot_canvas(
         }
     });
 
-    // =========================================================================
-    // [플롯 범례]: 채널 이름 및 단위만 표시 (우측 정렬: 이름 [단위] ●) + 컴팩트 사이즈 & 마우스 호버 강조
-    // =========================================================================
-    let mut newly_hovered: Option<usize> = None;
+        // 3. [다중 Y축 스케일]: 플롯 바깥 좌측에 완벽히 분리된 axis_rect 영역 내부에 단위별 스케일 렌더링
+        if let Some(axis_box) = axis_rect {
+            let p_bottom = plot_resp.transform.position_from_point(&egui_plot::PlotPoint::new(0.0, 0.0));
+            let p_top = plot_resp.transform.position_from_point(&egui_plot::PlotPoint::new(0.0, 100.0));
 
-    if !channels_to_plot.is_empty() {
+            let grid_top_y = p_top.y;
+            let grid_bottom_y = p_bottom.y;
+            let grid_height = (grid_bottom_y - grid_top_y).max(10.0);
+
+            let painter = ui.painter();
+
+            for (u_idx, group) in unit_groups.iter().enumerate() {
+                let col_x = axis_box.min.x + (u_idx as f32) * (col_width + col_gap);
+                // 툴바 및 상하 경계를 벗어나지 않도록 axis_box 내부에 클램핑
+                let col_top = (grid_top_y - 14.0).max(axis_box.min.y + 2.0);
+                let col_bottom = (grid_bottom_y + 2.0).min(axis_box.max.y - 2.0);
+                let col_rect = egui::Rect::from_min_max(
+                    egui::pos2(col_x, col_top),
+                    egui::pos2(col_x + col_width, col_bottom),
+                );
+
+                // 반투명 다크 배경 패널
+                painter.rect_filled(
+                    col_rect,
+                    3.0,
+                    Color32::from_rgba_premultiplied(16, 18, 24, 230),
+                );
+                painter.rect_stroke(
+                    col_rect,
+                    3.0,
+                    egui::Stroke::new(1.0_f32, Color32::from_rgb(50, 55, 65)),
+                );
+
+                // 상단 단위(Unit) 헤더 배지
+                let header_str = if group.unit.is_empty() { "단위" } else { &group.unit };
+                painter.text(
+                    egui::pos2(col_rect.center().x, col_rect.top() + 7.5),
+                    egui::Align2::CENTER_CENTER,
+                    format!("[{}]", header_str),
+                    egui::FontId::proportional(11.0),
+                    group.color,
+                );
+
+                // 우측 수직 Y축 라인
+                let axis_line_x = col_rect.right() - 4.0;
+                painter.line_segment(
+                    [egui::pos2(axis_line_x, grid_top_y), egui::pos2(axis_line_x, grid_bottom_y)],
+                    egui::Stroke::new(1.2_f32, group.color),
+                );
+
+                // 5개 틱 레벨 (100%, 75%, 50%, 25%, 0%)
+                let span = group.max_val - group.min_val;
+                let tick_fracs = [1.00_f64, 0.75_f64, 0.50_f64, 0.25_f64, 0.00_f64];
+
+                for &frac in &tick_fracs {
+                    let tick_y = grid_bottom_y - (grid_height * (frac as f32));
+
+                    // 틱 마크 선
+                    painter.line_segment(
+                        [egui::pos2(axis_line_x - 3.0, tick_y), egui::pos2(axis_line_x, tick_y)],
+                        egui::Stroke::new(1.0_f32, group.color),
+                    );
+
+                    // 틱 수치 텍스트 포맷 (오른쪽 정렬)
+                    let val = group.min_val + span * frac;
+                    let val_str = if span.abs() >= 100.0 {
+                        format!("{:.0}", val)
+                    } else if span.abs() >= 10.0 {
+                        format!("{:.1}", val)
+                    } else if span.abs() >= 1.0 {
+                        format!("{:.2}", val)
+                    } else {
+                        format!("{:.3}", val)
+                    };
+
+                    painter.text(
+                        egui::pos2(axis_line_x - 4.5, tick_y),
+                        egui::Align2::RIGHT_CENTER,
+                        val_str,
+                        egui::FontId::monospace(9.0),
+                        Color32::from_rgb(230, 235, 245),
+                    );
+                }
+
+                // 마우스 호버 툴팁
+                let col_resp = ui.interact(col_rect, ui.id().with(format!("{}_unit_axis_{}", plot_id, u_idx)), egui::Sense::hover());
+                let mut tooltip = format!("단위: [{}]\n스케일: {:.2} ~ {:.2}\n속한 채널 목록:", header_str, group.min_val, group.max_val);
+                for &c_idx in &group.channels {
+                    if c_idx < channels.len() {
+                        tooltip.push_str(&format!("\n• {}", channels[c_idx].config.name));
+                    }
+                }
+                col_resp.on_hover_text(tooltip);
+            }
+        }
+
+        // 4. [플롯 범례]: 플롯 캔버스 내부 우측 상단에 배치
+        if !channels_to_plot.is_empty() {
         let plot_rect = plot_resp.response.rect;
 
         // 1. 범례 내부 텍스트 최대 폭을 측정하여 범례 박스를 컨텐츠 크기에 딱 맞춤 (컴팩트 자동 피팅)
@@ -508,6 +897,8 @@ fn render_single_plot_canvas(
                 });
         });
     }
+
+    });
 
     // 마우스 호버 상태 변경 시 즉시 다시 렌더링 요청하여 부드럽고 지연 없는 하이라이트 제공
     if config.hovered_channel != newly_hovered {

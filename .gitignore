@@ -11,3 +11,10 @@ bin/*.exe
 .vscode/
 Thumbs.db
 [Dd]esktop.ini
+
+# Windows shortcuts & intermediate resources
+*.res
+*.lnk
+* - Copy.*
+bin/* - Copy.*
+

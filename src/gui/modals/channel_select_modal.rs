@@ -81,12 +81,16 @@ pub fn render_channel_select_modal<F>(
                 });
             });
 
+            let channels = channels_arc.read().unwrap();
+            let total_channels_count = channels.len();
+            let query = state.search_query.to_lowercase();
+
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(format!("선택된 채널 수: {}개", state.selected_channels.len()));
 
-                if ui.button("전체 선택 (100ch)").clicked() {
-                    for i in 0..100 {
+                if ui.button(format!("전체 선택 ({}ch)", total_channels_count)).clicked() {
+                    for i in 0..total_channels_count {
                         state.selected_channels.insert(i);
                     }
                     state.has_changes = true;
@@ -98,7 +102,7 @@ pub fn render_channel_select_modal<F>(
                 }
 
                 if ui.button("선택 반전").clicked() {
-                    for i in 0..100 {
+                    for i in 0..total_channels_count {
                         if state.selected_channels.contains(&i) {
                             state.selected_channels.remove(&i);
                         } else {
@@ -110,9 +114,6 @@ pub fn render_channel_select_modal<F>(
             });
 
             ui.separator();
-
-            let channels = channels_arc.read().unwrap();
-            let query = state.search_query.to_lowercase();
 
             // 하단 버튼 영역(약 45px) 제외 후 남은 상하 영역을 100% 꽉 채움!
             let table_height = (ui.available_height() - 45.0).max(250.0);
@@ -163,22 +164,29 @@ pub fn render_channel_select_modal<F>(
                         });
                 });
 
+            let remaining = (ui.available_height() - 32.0).max(0.0);
+            if remaining > 0.0 {
+                ui.add_space(remaining);
+            }
             ui.separator();
 
             ui.horizontal(|ui| {
-                let apply_btn = egui::Button::new(
-                    RichText::new("💾 적용 및 저장 (Apply & Save)").strong().color(Color32::from_rgb(100, 240, 100)),
-                );
-                if ui.add(apply_btn).clicked() {
-                    let mut sorted: Vec<usize> = state.selected_channels.iter().copied().collect();
-                    sorted.sort_unstable();
-                    on_apply(state.page_index, state.target, sorted);
-                    state.is_open = false;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("닫기").clicked() {
+                        state.is_open = false;
+                    }
 
-                if ui.button("취소").clicked() {
-                    state.is_open = false;
-                }
+                    ui.add_space(8.0);
+                    let apply_btn = egui::Button::new(
+                        RichText::new("💾 적용 및 저장 (Apply & Save)").strong().color(Color32::from_rgb(100, 240, 100)),
+                    );
+                    if ui.add(apply_btn).clicked() {
+                        let mut sorted: Vec<usize> = state.selected_channels.iter().copied().collect();
+                        sorted.sort_unstable();
+                        on_apply(state.page_index, state.target, sorted);
+                        state.is_open = false;
+                    }
+                });
             });
         });
 }

@@ -53,6 +53,22 @@ pub fn calc_crc16_ccitt(data: &[u8]) -> u16 {
     crc
 }
 
+/// CRC-16/AUG-CCITT (poly 0x1021, init 0x1D0F, no reflect, xorout 0x0000) - LabVIEW 기본 규격 호환
+pub fn calc_crc16_aug_ccitt(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0x1D0F;
+    for &byte in data {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            if (crc & 0x8000) != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeasurementPacket {
     pub device_id: u16,
@@ -107,8 +123,14 @@ impl MeasurementPacket {
         buf
     }
 
-    /// Deserialize from a raw byte slice (for UDP datagrams or framing buffers)
+    /// Deserialize from a raw byte slice (defaults to CRC verification enabled)
+    #[allow(dead_code)]
     pub fn from_bytes(data: &[u8]) -> Result<Self, PacketError> {
+        Self::from_bytes_opt(data, true)
+    }
+
+    /// Deserialize from a raw byte slice with optional CRC-16 check
+    pub fn from_bytes_opt(data: &[u8], verify_crc: bool) -> Result<Self, PacketError> {
         if data.len() < HEADER_SIZE + FOOTER_SIZE {
             return Err(PacketError::BufferTooShort);
         }
@@ -144,13 +166,16 @@ impl MeasurementPacket {
             return Err(PacketError::InvalidTailWord(tail));
         }
 
-        // Validate CRC-16
-        let calculated_crc = calc_crc16_ccitt(&data[0..crc_offset]);
-        if expected_crc != calculated_crc {
-            return Err(PacketError::CrcMismatch {
-                expected: expected_crc,
-                actual: calculated_crc,
-            });
+        // Validate CRC-16 (옵션이 켜져 있을 때만 검증, CCITT-FALSE(0xFFFF) 또는 LabVIEW 기본 AUG-CCITT(0x1D0F) 모두 허용)
+        if verify_crc {
+            let calculated_crc = calc_crc16_ccitt(&data[0..crc_offset]);
+            let calculated_crc_aug = calc_crc16_aug_ccitt(&data[0..crc_offset]);
+            if expected_crc != calculated_crc && expected_crc != calculated_crc_aug {
+                return Err(PacketError::CrcMismatch {
+                    expected: expected_crc,
+                    actual: calculated_crc,
+                });
+            }
         }
 
         // Extract float values
@@ -173,7 +198,16 @@ impl MeasurementPacket {
 }
 
 /// TCP Stream framing parser: Handles MTU-exceeding fragmentation and stream reassembly
+#[allow(dead_code)]
 pub fn extract_packet_from_stream(buffer: &mut Vec<u8>) -> Result<Option<MeasurementPacket>, PacketError> {
+    extract_packet_from_stream_opt(buffer, true)
+}
+
+/// TCP Stream framing parser with optional CRC check
+pub fn extract_packet_from_stream_opt(
+    buffer: &mut Vec<u8>,
+    verify_crc: bool,
+) -> Result<Option<MeasurementPacket>, PacketError> {
     loop {
         if buffer.len() < HEADER_SIZE + FOOTER_SIZE {
             return Ok(None);
@@ -220,7 +254,7 @@ pub fn extract_packet_from_stream(buffer: &mut Vec<u8>) -> Result<Option<Measure
         }
 
         // Attempt to parse
-        match MeasurementPacket::from_bytes(&buffer[0..total_size]) {
+        match MeasurementPacket::from_bytes_opt(&buffer[0..total_size], verify_crc) {
             Ok(pkt) => {
                 buffer.drain(0..total_size);
                 return Ok(Some(pkt));
@@ -273,5 +307,37 @@ mod tests {
         assert!(p2.is_some());
         assert_eq!(p2.unwrap().channel_count, 500);
         assert!(stream_buf.is_empty());
+    }
+
+    #[test]
+    fn test_crc_options_and_labview_compatibility() {
+        // 1. Verify standard test vector "123456789"
+        assert_eq!(calc_crc16_ccitt(b"123456789"), 0x29B1);
+        assert_eq!(calc_crc16_aug_ccitt(b"123456789"), 0xE5CC);
+
+        // 2. Create valid packet and test CRC bypass
+        let values: Vec<f32> = vec![1.0, 2.0, 3.0];
+        let pkt = MeasurementPacket::new(1, 1, 1000, 0, values);
+        let mut bytes = pkt.to_bytes();
+
+        // Intentionally corrupt the CRC bytes
+        let crc_pos = bytes.len() - 4;
+        bytes[crc_pos] = 0xDE;
+        bytes[crc_pos + 1] = 0xAD;
+
+        // When verify_crc = true, corrupted CRC must fail
+        assert!(MeasurementPacket::from_bytes_opt(&bytes, true).is_err());
+
+        // When verify_crc = false, corrupted CRC must pass!
+        let parsed_bypass = MeasurementPacket::from_bytes_opt(&bytes, false);
+        assert!(parsed_bypass.is_ok());
+
+        // 3. Test LabVIEW default AUG-CCITT CRC (0x1D0F init)
+        let aug_crc = calc_crc16_aug_ccitt(&bytes[0..crc_pos]);
+        BigEndian::write_u16(&mut bytes[crc_pos..crc_pos + 2], aug_crc);
+
+        // LabVIEW AUG-CCITT CRC is accepted even with verify_crc = true!
+        let parsed_aug = MeasurementPacket::from_bytes_opt(&bytes, true);
+        assert!(parsed_aug.is_ok());
     }
 }

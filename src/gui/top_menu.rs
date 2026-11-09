@@ -1,9 +1,9 @@
 use crate::gui::modals::config_modal::ConfigModalState;
 use crate::gui::modals::connection_modal::ConnectionModalState;
 use crate::gui::modals::sftp_modal::SftpModalState;
-use crate::model::target::{DataTransportProtocol, TargetDeviceConfig};
+use crate::gui::modals::system_modal::SystemModalState;
+use crate::model::target::TargetDeviceConfig;
 use crate::network::control_client::ControlClient;
-use crate::simulator::target_sim::TargetSimulator;
 use eframe::egui::{self, Color32, RichText, Ui};
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -30,9 +30,8 @@ pub fn render_top_menu(
     conn_modal: &mut ConnectionModalState,
     cfg_modal: &mut ConfigModalState,
     sftp_modal: &mut SftpModalState,
+    sys_modal: &mut SystemModalState,
     targets: &[TargetDeviceConfig],
-    simulator: &TargetSimulator,
-    on_save_layout_clicked: &mut bool,
 ) {
     ui.horizontal(|ui| {
         ui.heading(
@@ -48,6 +47,14 @@ pub fn render_top_menu(
 
         if ui.button("⚙ 채널설정/다운로드").clicked() {
             cfg_modal.is_open = true;
+        }
+
+        if ui.button("📥 SFTP파일다운로드").clicked() {
+            sftp_modal.is_open = true;
+        }
+
+        if ui.button("🛠 시스템").on_hover_text("내장 시뮬레이터, 통신 프로토콜(UDP/TCP), CRC 검증 및 시스템 설정을 관리합니다.").clicked() {
+            sys_modal.is_open = true;
         }
 
         ui.separator();
@@ -71,7 +78,7 @@ pub fn render_top_menu(
                             addr,
                             session.clone(),
                             "MEAS_DATA".to_string(),
-                            100,
+                            target.packet_interval_ms,
                         );
                     }
                 }
@@ -93,58 +100,5 @@ pub fn render_top_menu(
                 actions.recording_start_time = None;
             }
         }
-
-        ui.separator();
-
-        if ui.button("📥 SFTP파일다운로드").clicked() {
-            sftp_modal.is_open = true;
-        }
-
-        if ui.button("💾 레이아웃 저장").clicked() {
-            *on_save_layout_clicked = true;
-        }
-
-        ui.separator();
-
-        // Target Simulator Quick Toggle
-        let sim_running = simulator.is_running();
-        let sim_btn_text = if sim_running {
-            RichText::new("🟢 내장 시뮬레이터: 동작 중").color(Color32::GREEN)
-        } else {
-            RichText::new("⚪ 내장 시뮬레이터: 정지").color(Color32::LIGHT_GRAY)
-        };
-        if ui.button(sim_btn_text).clicked() {
-            if sim_running {
-                simulator.stop();
-            } else {
-                simulator.start();
-            }
-        }
-
-        // Quick Simulator Transport Selector (UDP vs TCP)
-        ui.label("통신모드:");
-        let mut cur_transport = targets.first().map(|t| t.transport).unwrap_or(DataTransportProtocol::Udp);
-        let proto_text = match cur_transport {
-            DataTransportProtocol::Udp => "UDP (MTU내)",
-            DataTransportProtocol::Tcp => "TCP (대용량/MTU초과)",
-        };
-        egui::ComboBox::from_id_salt("top_transport_combo")
-            .selected_text(proto_text)
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(cur_transport == DataTransportProtocol::Udp, "UDP (MTU내)")
-                    .clicked()
-                {
-                    cur_transport = DataTransportProtocol::Udp;
-                    simulator.set_transport(DataTransportProtocol::Udp);
-                }
-                if ui
-                    .selectable_label(cur_transport == DataTransportProtocol::Tcp, "TCP (대용량/MTU초과)")
-                    .clicked()
-                {
-                    cur_transport = DataTransportProtocol::Tcp;
-                    simulator.set_transport(DataTransportProtocol::Tcp);
-                }
-            });
     });
 }

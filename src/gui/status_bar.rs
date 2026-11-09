@@ -1,6 +1,6 @@
 use crate::gui::top_menu::TopMenuActions;
 use crate::model::target::{ConnectionStatus, DataTransportProtocol, TargetDeviceConfig, TargetDeviceRuntime};
-use eframe::egui::{Color32, RichText, Ui};
+use eframe::egui::{self, Color32, RichText, Ui};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -46,7 +46,7 @@ pub fn render_status_bar(
     let lost_count = total_lost_arc.load(Ordering::Relaxed);
     let total = rx_count + lost_count;
     let rx_rate = if total > 0 {
-        (rx_count as f64 / total as f64) * 100.0
+        ((rx_count as f64 / total as f64) * 100.0).clamp(0.0, 100.0)
     } else {
         100.0
     };
@@ -73,15 +73,28 @@ pub fn render_status_bar(
 
         ui.separator();
 
-        // 2. Total packet reception rate
-        let rx_text = format!("총 패킷 수신률: {:.2}% (Rx: {}, Lost: {})", rx_rate, rx_count, lost_count);
-        ui.label(RichText::new(rx_text).color(if rx_rate >= 99.0 {
+        // 2. Total packet reception rate (99%와 100% 자릿수 변동 시 흔들림 없도록 고정폭 우측 정렬)
+        ui.label(RichText::new("총 패킷 수신률:").strong());
+
+        let rate_str = format!("{:>6.2}%", rx_rate);
+        let rate_color = if rx_rate >= 99.0 {
             Color32::from_rgb(100, 240, 100)
         } else if rx_rate >= 95.0 {
             Color32::YELLOW
         } else {
             Color32::RED
-        }));
+        };
+
+        ui.allocate_ui_with_layout(
+            egui::vec2(68.0, ui.spacing().interact_size.y.max(18.0)),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(RichText::new(rate_str).monospace().strong().color(rate_color));
+            },
+        );
+
+        let count_str = format!("(Rx: {:>6}, Lost: {:>3})", rx_count, lost_count);
+        ui.label(RichText::new(count_str).monospace().color(Color32::from_rgb(180, 180, 180)));
 
         ui.separator();
 

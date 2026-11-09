@@ -1,5 +1,5 @@
 use crate::model::channel::ChannelState;
-use crate::model::target::TargetDeviceRuntime;
+use crate::model::target::{TargetDeviceConfig, TargetDeviceRuntime};
 use crate::processing::ring_buffer::ChannelRingBuffer;
 use crate::protocol::packet::MeasurementPacket;
 use crossbeam_channel::Receiver;
@@ -16,6 +16,34 @@ pub struct ProcessingEngineShared {
     pub total_rx_packets: Arc<AtomicU64>,
     pub total_lost_packets: Arc<AtomicU64>,
     pub start_time: Instant,
+}
+
+impl ProcessingEngineShared {
+    /// 필요 채널 수(예: 200채널 등)에 맞춰 channels 및 ring_buffers를 실시간 동적 확장
+    #[allow(dead_code)]
+    pub fn ensure_channel_capacity(&self, needed_count: usize) {
+        self.sync_channel_capacity(needed_count);
+    }
+
+    /// 타겟 장치들의 총 채널 수에 맞춰 channels 및 ring_buffers 크기를 정확히 동기화 (확장 및 축소)
+    pub fn sync_channel_capacity(&self, needed_count: usize) {
+        if needed_count == 0 {
+            return;
+        }
+        let mut ch_guard = self.channels.write().unwrap();
+        let mut rb_guard = self.ring_buffers.write().unwrap();
+        let current = ch_guard.len();
+        if needed_count > current {
+            for i in current..needed_count {
+                let cfg = crate::protocol::commands::ChannelConfigItem::default_for(i);
+                ch_guard.push(ChannelState::new(cfg));
+                rb_guard.push(ChannelRingBuffer::new(5000));
+            }
+        } else if needed_count < current {
+            ch_guard.truncate(needed_count);
+            rb_guard.truncate(needed_count);
+        }
+    }
 }
 
 pub struct ProcessingEngine {
@@ -98,20 +126,42 @@ impl ProcessingEngine {
                         for pkt in batch.drain(..) {
                             let rel_time = start_time.elapsed().as_secs_f64();
 
-                            // Update target device statistics
-                            if let Some(target) = tgt_guard.get_mut(&pkt.device_id) {
+                            // Update target device statistics (미등록 장치도 패킷 유입 시 즉시 런타임 자동 생성하여 수신 처리)
+                            let (target_offset, target_limit, target_lost) = {
+                                let target = tgt_guard.entry(pkt.device_id).or_insert_with(|| {
+                                    let cfg = TargetDeviceConfig::new_default(
+                                        pkt.device_id,
+                                        &format!("Target-{:02}", pkt.device_id),
+                                        "0.0.0.0".parse().unwrap(),
+                                    );
+                                    TargetDeviceRuntime::new(cfg)
+                                });
                                 target.record_packet(pkt.sequence);
-                                total_lost.store(target.total_packets_lost, Ordering::Relaxed);
-                            }
+                                (
+                                    target.config.channel_offset,
+                                    target.config.channel_count,
+                                    target.total_packets_lost,
+                                )
+                            };
+                            total_lost.store(target_lost, Ordering::Relaxed);
                             total_rx.fetch_add(1, Ordering::Relaxed);
 
-                            // Update channel values and ring buffers
+                            // Update channel values and ring buffers (타겟별 channel_offset 및 channel_count 한도 적용하여 채널 충돌 방지 및 필요 시 동적 확장)
+                            let needed_capacity = target_offset + pkt.data.len().min(target_limit);
+                            if needed_capacity > ch_guard.len() {
+                                for idx in ch_guard.len()..needed_capacity {
+                                    let cfg = crate::protocol::commands::ChannelConfigItem::default_for(idx);
+                                    ch_guard.push(ChannelState::new(cfg));
+                                    rb_guard.push(ChannelRingBuffer::new(5000));
+                                }
+                            }
                             let ch_len = ch_guard.len();
-                            for (idx, &raw_val) in pkt.data.iter().enumerate() {
-                                if idx < ch_len {
-                                    ch_guard[idx].update_value(raw_val, pkt.timestamp);
-                                    let scaled = ch_guard[idx].scaled_value;
-                                    rb_guard[idx].push(rel_time, scaled);
+                            for (i, &raw_val) in pkt.data.iter().take(target_limit).enumerate() {
+                                let ch_idx = target_offset + i;
+                                if ch_idx < ch_len {
+                                    ch_guard[ch_idx].update_value(raw_val, pkt.timestamp);
+                                    let scaled = ch_guard[ch_idx].scaled_value;
+                                    rb_guard[ch_idx].push(rel_time, scaled);
                                 }
                             }
                         }

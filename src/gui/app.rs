@@ -5,19 +5,19 @@ use crate::gui::modals::channel_select_modal::{
 use crate::gui::modals::config_modal::{render_config_modal, ConfigModalState};
 use crate::gui::modals::connection_modal::{render_connection_modal, ConnectionModalState};
 use crate::gui::modals::sftp_modal::{render_sftp_modal, SftpModalState};
+use crate::gui::modals::system_modal::{render_system_modal, SystemModalState};
 use crate::gui::modals::y_scale_modal::{render_y_scale_modal, YScaleModalState};
 use crate::gui::page_tabs::render_page_tabs;
 use crate::gui::plots::render_dual_or_single_plots;
 use crate::gui::status_bar::{render_status_bar, StatusBarState};
 use crate::gui::top_menu::{render_top_menu, TopMenuActions};
-use crate::model::page::{PageLayoutConfig, CONFIG_FILE_NAME};
+use crate::model::page::{PageLayoutConfig, resolve_layout_config_path};
 use crate::model::target::{TargetDeviceConfig, TargetDeviceRuntime};
 use crate::network::receiver::NetworkReceiver;
 use crate::processing::engine::{ProcessingEngine, ProcessingEngineShared};
 use crate::simulator::target_sim::{TargetSimulator, TargetSimulatorConfig};
 use crossbeam_channel::bounded;
 use eframe::egui::{self, CentralPanel, SidePanel, TopBottomPanel};
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -27,17 +27,22 @@ pub struct MeasurementStudioApp {
     pub current_page: usize,
     pub targets: Vec<TargetDeviceConfig>,
     pub config_path: PathBuf,
+    pub targets_config_path: PathBuf,
 
     // GUI component states
     pub menu_actions: TopMenuActions,
     pub conn_modal: ConnectionModalState,
     pub cfg_modal: ConfigModalState,
     pub sftp_modal: SftpModalState,
+    pub sys_modal: SystemModalState,
     pub select_modal: ChannelSelectModalState,
     pub y_scale_modal: YScaleModalState,
     pub status_bar_state: StatusBarState,
 
     pub save_notification: Option<(String, Instant)>,
+
+    // CRC-16 검증 On/Off 옵션 (원격 패킷 무결성 검증 토글)
+    pub verify_crc: std::sync::Arc<std::sync::atomic::AtomicBool>,
 
     // Network & Engine handles
     _receiver: NetworkReceiver,
@@ -49,72 +54,87 @@ impl MeasurementStudioApp {
         // [한글 폰트 설정] Windows 시스템 한글 폰트(맑은 고딕 / 굴림 등) 등록
         setup_korean_fonts(&cc.egui_ctx);
 
-        // 레이아웃 영구 저장 파일 경로
-        let config_path = PathBuf::from(CONFIG_FILE_NAME);
+        // 레이아웃 영구 저장 파일 경로 자동 해석
+        let config_path = resolve_layout_config_path();
         // 저장된 페이지 레이아웃 불러오기 (없으면 기본값 생성)
         let pages = PageLayoutConfig::load_or_default(&config_path);
 
         // Channel for measurement packets (bounded buffer for zero allocation streaming)
         let (packet_tx, packet_rx) = bounded(4096);
 
-        // 1. Initialize Processing Engine (100 channels, 5000 samples ring buffer = 500 seconds history)
-        let (engine, processing_shared) = ProcessingEngine::new(100, 5000);
+        // CRC-16 검증 옵션 (기본 True)
+        let verify_crc = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        // 타겟 설정 파일 경로 해석 및 마지막 설정 로드 (없으면 기본값 생성)
+        let targets_config_path = crate::model::target::resolve_target_config_path();
+        let targets = TargetDeviceConfig::load_or_default(&targets_config_path);
+
+        // 등록된 타겟들이 사용하는 총 채널 수 계산 (기본 50, 최소 1)
+        let total_channels = targets
+            .iter()
+            .map(|t| t.channel_offset + t.channel_count)
+            .max()
+            .unwrap_or(50)
+            .max(1);
+
+        // 1. Initialize Processing Engine (타겟 설정에 맞춘 정확한 채널 수로 초기화)
+        let (engine, processing_shared) = ProcessingEngine::new(total_channels, 5000);
         engine.start(packet_rx);
 
         // 2. Initialize Network Receiver (UDP on 8000, TCP on 8001)
-        let mut receiver = NetworkReceiver::new(packet_tx);
+        let mut receiver = NetworkReceiver::new(packet_tx, std::sync::Arc::clone(&verify_crc));
         if let Err(e) = receiver.start("0.0.0.0:8000", "0.0.0.0:8001") {
             eprintln!("Warning: Failed to bind network ports: {}", e);
         }
 
-        // 3. Register default Target Device
-        let default_target = TargetDeviceConfig::new_default(
-            1,
-            "Target-Station-01",
-            "127.0.0.1".parse::<IpAddr>().unwrap(),
-        );
+        // 3. Register loaded Target Devices
         {
             let mut guard = processing_shared.targets.write().unwrap();
-            guard.insert(
-                default_target.device_id,
-                TargetDeviceRuntime::new(default_target.clone()),
-            );
+            for target in &targets {
+                guard.insert(
+                    target.device_id,
+                    TargetDeviceRuntime::new(target.clone()),
+                );
+            }
         }
 
-        // 4. Initialize Built-in Simulator
-        let sim_cfg = TargetSimulatorConfig::default();
+        // 4. Initialize Built-in Simulator (기본 정지 상태 유지 및 저장된 전송주기/프로토콜 적용)
+        let mut sim_cfg = TargetSimulatorConfig::default();
+        if let Some(first_target) = targets.first() {
+            sim_cfg.interval_ms = first_target.packet_interval_ms as u64;
+            sim_cfg.transport = first_target.transport;
+        }
         let simulator = TargetSimulator::new(sim_cfg);
-        // Start simulator by default for instant out-of-the-box demonstration!
-        simulator.start();
 
         Self {
             processing_shared,
             pages,
             current_page: 0,
-            targets: vec![default_target],
+            targets,
             config_path,
+            targets_config_path,
             menu_actions: TopMenuActions::default(),
             conn_modal: ConnectionModalState::default(),
             cfg_modal: ConfigModalState::default(),
             sftp_modal: SftpModalState::default(),
+            sys_modal: SystemModalState::default(),
             select_modal: ChannelSelectModalState::default(),
             y_scale_modal: YScaleModalState::default(),
             status_bar_state: StatusBarState::default(),
             save_notification: None,
+            verify_crc,
             _receiver: receiver,
             simulator,
         }
     }
 
-    /// 페이지 레이아웃 변경 시 파일에 영구 저장
+    /// 페이지 레이아웃 및 타겟 설정 변경 시 파일에 실시간 영구 자동 저장
     pub fn save_layout(&mut self) {
         if let Err(e) = PageLayoutConfig::save_to_file(&self.config_path, &self.pages) {
             eprintln!("Failed to save layout: {}", e);
-        } else {
-            self.save_notification = Some((
-                "✔ 페이지별 그래프 채널 및 Y스케일 구성이 저장되었습니다.".to_string(),
-                Instant::now(),
-            ));
+        }
+        if let Err(e) = TargetDeviceConfig::save_to_file(&self.targets_config_path, &self.targets) {
+            eprintln!("Failed to save targets config: {}", e);
         }
     }
 }
@@ -162,10 +182,12 @@ fn setup_korean_fonts(ctx: &egui::Context) {
 
 impl eframe::App for MeasurementStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 타겟 장치들의 채널 범위(시작CH + 채널수)에 맞춰 채널 용량 실시간 동기화
+        let needed_channels = self.targets.iter().map(|t| t.channel_offset + t.channel_count).max().unwrap_or(50).max(1);
+        self.processing_shared.sync_channel_capacity(needed_channels);
+
         // Request smooth continuous repaint (~60 FPS) for real-time measurement waveforms
         ctx.request_repaint_after(Duration::from_millis(16));
-
-        let mut manual_save_clicked = false;
 
         // 1. Top Menu Bar
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -175,9 +197,8 @@ impl eframe::App for MeasurementStudioApp {
                 &mut self.conn_modal,
                 &mut self.cfg_modal,
                 &mut self.sftp_modal,
+                &mut self.sys_modal,
                 &self.targets,
-                &self.simulator,
-                &mut manual_save_clicked,
             );
 
             // 저장 알림 메시지 (3초간 표시)
@@ -189,10 +210,6 @@ impl eframe::App for MeasurementStudioApp {
                 }
             }
         });
-
-        if manual_save_clicked {
-            self.save_layout();
-        }
 
         // 2. Bottom Status Bar
         TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
@@ -207,12 +224,12 @@ impl eframe::App for MeasurementStudioApp {
             );
         });
 
+        let mut layout_changed = false;
+
         // 3. Bottom Page Selector Tabs (10-Page interface)
         TopBottomPanel::bottom("page_bar").show(ctx, |ui| {
             render_page_tabs(ui, &mut self.current_page, &self.pages);
         });
-
-        let mut layout_changed = false;
 
         // 4. Right Side Panel: Channel Lists (Page 1: 2 Lists, Page 2~10: 1 List)
         SidePanel::right("channel_side_panel")
@@ -247,6 +264,7 @@ impl eframe::App for MeasurementStudioApp {
                 render_dual_or_single_plots(
                     ui,
                     is_dual,
+                    &mut page.title,
                     &page.top_channels,
                     &page.bottom_channels,
                     &mut page.top_graph_config,
@@ -260,14 +278,35 @@ impl eframe::App for MeasurementStudioApp {
         });
 
         // 6. Modals
-        render_connection_modal(ctx, &mut self.conn_modal, &mut self.targets);
+        render_connection_modal(
+            ctx,
+            &mut self.conn_modal,
+            &mut self.targets,
+            &self.processing_shared.targets,
+            &self.verify_crc,
+        );
         render_config_modal(
             ctx,
             &mut self.cfg_modal,
             &self.processing_shared.channels,
             &self.targets,
         );
-        render_sftp_modal(ctx, &mut self.sftp_modal);
+        render_sftp_modal(
+            ctx,
+            &mut self.sftp_modal,
+            &mut self.targets,
+            &self.targets_config_path,
+        );
+        render_system_modal(
+            ctx,
+            &mut self.sys_modal,
+            &self.simulator,
+            &mut self.targets,
+            &self.verify_crc,
+            &self.targets_config_path,
+            &mut self.pages,
+            &self.config_path,
+        );
 
         // 7. Channel Select Modal
         let mut modal_apply_args = None;
@@ -314,5 +353,9 @@ impl eframe::App for MeasurementStudioApp {
         if layout_changed {
             self.save_layout();
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_layout();
     }
 }

@@ -59,10 +59,10 @@ pub fn render_y_scale_modal<F>(
 
     Window::new(format!("⚙ {}", state.title))
         .collapsible(false)
-        .resizable([false, true]) // 좌우 고정, 상하 조절 가능
-        .min_width(580.0)
-        .max_width(580.0)         // 내용에 맞게 좌우 크기 고정
-        .default_height(600.0)     // 상하로 넉넉한 기본 높이
+        .resizable([true, true])
+        .default_size([580.0, 600.0])
+        .min_width(520.0)
+        .min_height(350.0)
         .show(ctx, |ui| {
             ui.heading("채널별 Y축 표시 범위(Y-Min / Y-Max) 설정");
             ui.label(
@@ -108,21 +108,27 @@ pub fn render_y_scale_modal<F>(
                         });
                 });
 
+            let remaining = (ui.available_height() - 32.0).max(0.0);
+            if remaining > 0.0 {
+                ui.add_space(remaining);
+            }
             ui.separator();
             ui.horizontal(|ui| {
-                if ui
-                    .button(
-                        RichText::new("💾 적용 및 저장").strong().color(Color32::from_rgb(100, 240, 100)),
-                    )
-                    .clicked()
-                {
-                    on_save(&state.temp_limits);
-                    state.is_open = false;
-                }
-
-                if ui.button("취소").clicked() {
-                    state.is_open = false;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("닫기").clicked() {
+                        state.is_open = false;
+                    }
+                    ui.add_space(8.0);
+                    if ui
+                        .button(
+                            RichText::new("💾 적용 및 저장").strong().color(Color32::from_rgb(100, 240, 100)),
+                        )
+                        .clicked()
+                    {
+                        on_save(&state.temp_limits);
+                        state.is_open = false;
+                    }
+                });
             });
         });
 }
