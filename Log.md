@@ -49,3 +49,14 @@
    - cmdkey /delete:git:https://github.com && cmdkey /delete:git:https://jaesang-jeong@github.com → 삭제 성공
 3. 미해결 / 제안:
    - push_to_github.bat 실행 시 브라우저 로그인 창을 통한 최신 인증 안내
+
+
+## 2026-11-09 18:37 — Cygwin Git 충돌 해결 및 공식 Windows Git 경로 우선 적용
+[DONE]
+1. 수정 파일:
+   - push_to_github.bat
+2. 검증:
+   - where git 확인 시 C:\cygwin64\bin\git.exe 가 1순위로 잡혀 credential-manager 가 동작하지 않던 문제 발견
+   - C:\Program Files\Git\cmd\git.exe 우선 지정 로직 추가하여 정상 GCM 브라우저 인증 환경 구성
+3. 미해결 / 제안:
+   - 수정된 push_to_github.bat 재실행 안내
