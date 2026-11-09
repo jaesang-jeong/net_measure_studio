@@ -11,11 +11,23 @@ echo Branch      : main
 echo ========================================================
 echo.
 
-:: Cygwin / MSYS git filesystem boundary fix
-set GIT_DISCOVERY_ACROSS_FILESYSTEM=1
+:: Prioritize official Windows Git over Cygwin git
+if exist "C:\Program Files\Git\cmd\git.exe" (
+    set "GIT_EXE=C:\Program Files\Git\cmd\git.exe"
+    echo [INFO] Using Windows Git: C:\Program Files\Git\cmd\git.exe
+) else if exist "C:\Program Files (x86)\Git\cmd\git.exe" (
+    set "GIT_EXE=C:\Program Files (x86)\Git\cmd\git.exe"
+    echo [INFO] Using Windows Git: C:\Program Files (x86)\Git\cmd\git.exe
+) else (
+    set "GIT_EXE=git"
+    echo [INFO] Using system PATH git
+)
 
-:: Push to GitHub
-git push -u origin main
+echo.
+echo [INFO] Running: "%GIT_EXE%" push -u origin main
+echo.
+
+"%GIT_EXE%" push -u origin main
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
