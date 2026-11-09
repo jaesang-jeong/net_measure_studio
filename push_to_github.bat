@@ -1,23 +1,42 @@
 @echo off
 setlocal
+cd /d "%~dp0"
+
 echo ========================================================
 echo   Pushing Network Measurement Studio to GitHub
 echo ========================================================
-echo Remote URL: https://github.com/jaesang-jeong/net_measure_studio.git
-echo Branch    : main
+echo Working Dir : %CD%
+echo Remote URL  : https://github.com/jaesang-jeong/net_measure_studio.git
+echo Branch      : main
+echo ========================================================
 echo.
+
+:: Cygwin / MSYS git filesystem boundary fix
+set GIT_DISCOVERY_ACROSS_FILESYSTEM=1
+
+:: Push to GitHub
 git push -u origin main
+
 if %ERRORLEVEL% NEQ 0 (
     echo.
-    echo [ERROR] Push failed!
-    echo If the repository has not been created on GitHub yet, please create a new repository:
-    echo   1. Go to https://github.com/new
-    echo   2. Repository name: net_measure_studio
-    echo   3. Do NOT initialize with README/license (keep it empty)
-    echo   4. Click 'Create repository', then run this script again!
+    echo ========================================================
+    echo   [ERROR] Push failed!
+    echo ========================================================
+    echo 1. If 403 Forbidden error occurred:
+    echo    Your Windows Credential Manager has expired GitHub credentials.
+    echo    Please sign in when the browser window appears, or update your token.
     echo.
+    echo 2. If Repository not found error occurred:
+    echo    Please create an empty repository on GitHub:
+    echo      - URL : https://github.com/new
+    echo      - Name: net_measure_studio
+    echo ========================================================
 ) else (
     echo.
-    echo [SUCCESS] Successfully pushed to GitHub!
+    echo ========================================================
+    echo   [SUCCESS] Successfully pushed to GitHub!
+    echo ========================================================
 )
+
+echo.
 pause
