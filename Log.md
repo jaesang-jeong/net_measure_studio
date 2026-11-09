@@ -28,3 +28,14 @@
 3. 미해결 / 제안:
    - 원격 저장소(`net_measure_studio`)는 정상 인식되었으나, 로컬 PC에 캐시된 GitHub 자격 증명 권한 만료로 403 발생.
    - push_to_github.bat 직접 실행 또는 GitHub Personal Access Token(PAT)을 통한 인증 갱신 제안.
+
+
+## 2026-11-09 18:27 — push_to_github.bat 디렉터리 경로 및 구문 오류 수정
+[DONE]
+1. 수정 파일:
+   - push_to_github.bat
+2. 검증:
+   - cd /d "%~dp0" 및 GIT_DISCOVERY_ACROSS_FILESYSTEM=1 추가로 fatal: not a git repository 오류 해결
+   - 배치 괄호 구문 분기 오류 수정
+3. 미해결 / 제안:
+   - 수정된 push_to_github.bat 재실행 안내
