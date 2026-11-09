@@ -39,3 +39,13 @@
    - 배치 괄호 구문 분기 오류 수정
 3. 미해결 / 제안:
    - 수정된 push_to_github.bat 재실행 안내
+
+
+## 2026-11-09 18:28 — 만료된 Windows GitHub 자격 증명 캐시 삭제
+[DONE]
+1. 수정 파일:
+   - 없음
+2. 검증:
+   - cmdkey /delete:git:https://github.com && cmdkey /delete:git:https://jaesang-jeong@github.com → 삭제 성공
+3. 미해결 / 제안:
+   - push_to_github.bat 실행 시 브라우저 로그인 창을 통한 최신 인증 안내
