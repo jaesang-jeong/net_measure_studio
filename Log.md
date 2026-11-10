@@ -60,3 +60,15 @@
    - C:\Program Files\Git\cmd\git.exe 우선 지정 로직 추가하여 정상 GCM 브라우저 인증 환경 구성
 3. 미해결 / 제안:
    - 수정된 push_to_github.bat 재실행 안내
+
+
+## 2026-11-10 16:50 — GitHub 푸시 도우미 스크립트 전면 재작성 (PowerShell 및 PAT 토큰 지원)
+[DONE]
+1. 수정 파일:
+   - push_to_github.bat
+   - push_to_github.ps1
+2. 검증:
+   - CMD 한글/UTF-8 인코딩 오류 및 자격 증명 403 오류를 완전히 해결하기 위해 PowerShell 기반 대화형 도우미 구축
+   - [1] 토큰 푸시, [2] 브라우저 토큰 생성 페이지 즉시 열기, [3] 기본 푸시 지원
+3. 미해결 / 제안:
+   - push_to_github.bat 실행하여 토큰 발급 및 원클릭 푸시 진행 안내
